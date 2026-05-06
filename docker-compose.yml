@@ -1,0 +1,91 @@
+# ══════════════════════════════════════════════════════════════
+#  Distributed Key-Value Store — Docker Compose
+# ══════════════════════════════════════════════════════════════
+#
+# This file defines a 3-node cluster:
+#   • node1 — Leader  (port 8001)
+#   • node2 — Follower (port 8002)
+#   • node3 — Follower (port 8003)
+#
+# Usage:
+#   docker compose up --build
+#   docker compose down -v          # tear down and remove volumes
+#
+# Distributed Systems Concept — Cluster Topology:
+#   All three containers share a Docker bridge network (`kvnet`)
+#   and can reach each other by hostname (node1, node2, node3).
+#   Each node gets its own persistent volume for WAL and SQLite data.
+# ══════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+services:
+  node1:
+    build: .
+    container_name: node1
+    hostname: node1
+    ports:
+      - "8001:8000"
+    environment:
+      NODE_ID: node1
+      NODE_ROLE: leader
+      NODE_HOST: "0.0.0.0"
+      NODE_PORT: "8000"
+      PEERS: "http://node2:8000,http://node3:8000"
+      LEADER_URL: "http://node1:8000"
+      DATA_DIR: "/app/data"
+    volumes:
+      - node1_data:/app/data
+    networks:
+      - kvnet
+
+  node2:
+    build: .
+    container_name: node2
+    hostname: node2
+    ports:
+      - "8002:8000"
+    environment:
+      NODE_ID: node2
+      NODE_ROLE: follower
+      NODE_HOST: "0.0.0.0"
+      NODE_PORT: "8000"
+      PEERS: "http://node1:8000,http://node3:8000"
+      LEADER_URL: "http://node1:8000"
+      DATA_DIR: "/app/data"
+    volumes:
+      - node2_data:/app/data
+    networks:
+      - kvnet
+    depends_on:
+      - node1
+
+  node3:
+    build: .
+    container_name: node3
+    hostname: node3
+    ports:
+      - "8003:8000"
+    environment:
+      NODE_ID: node3
+      NODE_ROLE: follower
+      NODE_HOST: "0.0.0.0"
+      NODE_PORT: "8000"
+      PEERS: "http://node1:8000,http://node2:8000"
+      LEADER_URL: "http://node1:8000"
+      DATA_DIR: "/app/data"
+    volumes:
+      - node3_data:/app/data
+    networks:
+      - kvnet
+    depends_on:
+      - node1
+
+volumes:
+  node1_data:
+  node2_data:
+  node3_data:
+
+networks:
+  kvnet:
+    driver: bridge
