@@ -326,17 +326,7 @@ git branch -M main
 git push -u origin main
 ```
 
----
 
-## 📝 Resume-Ready Bullets
-
-> - Built a **distributed key-value store** using Python, FastAPI, and Docker with **leader-based quorum replication** across a 3-node cluster.
-> - Implemented **write-ahead logging**, **replica synchronization**, **fault-tolerant writes**, and **automatic recovery** for failed follower nodes.
-> - Designed a **quorum-based consistency model** ensuring data durability even under partial node failures (tolerates 1 of 3 nodes failing).
-> - Added **observability endpoints**, a **CLI client**, and **automated tests** covering replication, consistency, and failure recovery scenarios.
-> - Containerised the application with Docker Compose, enabling one-command deployment of a fully functional distributed database cluster.
-
----
 
 ## 📜 License
 
