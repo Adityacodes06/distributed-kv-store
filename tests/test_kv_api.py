@@ -1,26 +1,12 @@
-"""
-Tests for the key-value API endpoints (PUT, GET, DELETE, health, metrics).
-
-These are unit-level tests that run a single node (leader) in isolation
-without any network replication — the PEERS env var is left empty so
-quorum is trivially satisfied (single-node cluster).
-"""
-
 from __future__ import annotations
-
 import os
 import shutil
-
 import pytest
 from fastapi.testclient import TestClient
 
 
 @pytest.fixture(autouse=True)
 def _setup_env(tmp_path):
-    """
-    Configure environment for a single-node leader before each test.
-    Uses a temporary directory so tests are fully isolated.
-    """
     data_dir = str(tmp_path / "data")
     os.environ["NODE_ID"] = "test-node"
     os.environ["NODE_ROLE"] = "leader"
@@ -29,30 +15,24 @@ def _setup_env(tmp_path):
     os.environ["PEERS"] = ""
     os.environ["LEADER_URL"] = "http://localhost:8000"
     os.environ["DATA_DIR"] = data_dir
-
-    # Re-import to pick up fresh settings
     import importlib
     import app.config
+
     importlib.reload(app.config)
     import app.replication
+
     importlib.reload(app.replication)
     import app.main as main_mod
-    importlib.reload(main_mod)
 
-    # Manually initialise the storage engine (lifespan won't run in TestClient
-    # unless we use `with` context manager, but reload complicates that)
+    importlib.reload(main_mod)
     from app.storage import StorageEngine
     from app.config import settings
-    main_mod.engine = StorageEngine(settings.data_dir)
 
-    # Reset counters
+    main_mod.engine = StorageEngine(settings.data_dir)
     main_mod.total_reads = 0
     main_mod.total_writes = 0
     main_mod.total_deletes = 0
-
     yield
-
-    # Cleanup
     if os.path.exists(data_dir):
         shutil.rmtree(data_dir)
 
@@ -60,10 +40,9 @@ def _setup_env(tmp_path):
 @pytest.fixture
 def client():
     from app.main import app
+
     return TestClient(app, raise_server_exceptions=True)
 
-
-# ── Health & Metrics ────────────────────────────────────────
 
 def test_health(client):
     resp = client.get("/health")
@@ -83,15 +62,10 @@ def test_metrics_initial(client):
     assert data["log_index"] == -1
 
 
-# ── PUT / GET / DELETE ──────────────────────────────────────
-
 def test_put_and_get(client):
-    # PUT a value
     resp = client.put("/kv/name", json={"value": "Aditya"})
     assert resp.status_code == 200
     assert resp.json()["message"] == "stored"
-
-    # GET the same key
     resp = client.get("/kv/name")
     assert resp.status_code == 200
     assert resp.json()["value"] == "Aditya"
@@ -114,13 +88,11 @@ def test_delete(client):
     resp = client.delete("/kv/temp")
     assert resp.status_code == 200
     assert resp.json()["message"] == "deleted"
-
     resp = client.get("/kv/temp")
     assert resp.status_code == 404
 
 
 def test_delete_missing_key(client):
-    # Deleting a non-existent key should still succeed (idempotent)
     resp = client.delete("/kv/ghost")
     assert resp.status_code == 200
 
@@ -130,11 +102,9 @@ def test_metrics_after_operations(client):
     client.put("/kv/b", json={"value": "2"})
     client.get("/kv/a")
     client.delete("/kv/b")
-
     resp = client.get("/metrics")
     data = resp.json()
     assert data["total_writes"] == 2
-    # total_reads includes the GET /kv/a + GET /metrics calls
     assert data["total_reads"] >= 1
     assert data["total_deletes"] == 1
-    assert data["log_index"] >= 2  # at least 2 puts + 1 delete = index 2
+    assert data["log_index"] >= 2

@@ -1,18 +1,8 @@
-"""
-Tests for replication logic — WAL, log entries, and quorum mechanics.
-
-These tests exercise the storage engine and replication module
-directly without spinning up full HTTP servers.
-"""
-
 from __future__ import annotations
-
 import os
 import shutil
 import tempfile
-
 import pytest
-
 from app.models import LogEntry
 from app.storage import StorageEngine, WriteAheadLog
 
@@ -25,9 +15,8 @@ def data_dir(tmp_path):
     shutil.rmtree(d, ignore_errors=True)
 
 
-# ── WAL Tests ───────────────────────────────────────────────
-
 class TestWriteAheadLog:
+
     def test_append_and_read(self, data_dir):
         wal = WriteAheadLog(data_dir)
         entry = wal.append("put", "name", "Aditya")
@@ -52,19 +41,15 @@ class TestWriteAheadLog:
         wal.append("put", "a", "1")
         wal.append("put", "b", "2")
         wal.append("put", "c", "3")
-
         entries = wal.entries_after(0)
         assert len(entries) == 2
         assert entries[0].index == 1
         assert entries[1].index == 2
 
     def test_persistence_across_restarts(self, data_dir):
-        """Simulate a crash + restart by creating a new WAL instance."""
         wal1 = WriteAheadLog(data_dir)
         wal1.append("put", "x", "42")
         wal1.append("put", "y", "99")
-
-        # "Restart" — new instance reads from the same file
         wal2 = WriteAheadLog(data_dir)
         assert wal2.last_index == 1
         entries = wal2.all_entries()
@@ -73,17 +58,15 @@ class TestWriteAheadLog:
         assert entries[1].key == "y"
 
     def test_idempotent_append_entry(self, data_dir):
-        """Follower receiving a duplicate entry should not double-apply."""
         wal = WriteAheadLog(data_dir)
         entry = LogEntry(index=0, operation="put", key="k", value="v")
         wal.append_entry(entry)
-        wal.append_entry(entry)  # duplicate
+        wal.append_entry(entry)
         assert len(wal.all_entries()) == 1
 
 
-# ── StorageEngine Tests ─────────────────────────────────────
-
 class TestStorageEngine:
+
     def test_write_and_read(self, data_dir):
         engine = StorageEngine(data_dir)
         engine.write("put", "color", "blue")
@@ -104,7 +87,6 @@ class TestStorageEngine:
         assert engine.log_index == 1
 
     def test_apply_replicated_entry(self, data_dir):
-        """Simulate a follower receiving a replicated entry."""
         engine = StorageEngine(data_dir)
         entry = LogEntry(index=0, operation="put", key="city", value="Mumbai")
         engine.apply_replicated_entry(entry)
@@ -112,16 +94,10 @@ class TestStorageEngine:
         assert engine.log_index == 0
 
     def test_crash_recovery(self, data_dir):
-        """
-        Write data, destroy the engine, create a new one from the
-        same data directory — WAL replay should restore all state.
-        """
         engine1 = StorageEngine(data_dir)
         engine1.write("put", "hero", "Batman")
         engine1.write("put", "villain", "Joker")
         engine1.write("delete", "villain")
-
-        # Simulate crash: just create a new engine over the same dir
         engine2 = StorageEngine(data_dir)
         assert engine2.read("hero") == "Batman"
         assert engine2.read("villain") is None
