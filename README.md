@@ -326,8 +326,4 @@ git branch -M main
 git push -u origin main
 ```
 
-
-
-## 📜 License
-
-MIT — feel free to use this for your portfolio, interviews, or learning.
+This is a python Project, implementation of this in GoLang will be available in some time.
