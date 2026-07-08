@@ -1,6 +1,6 @@
-# 🗄️ Distributed Key-Value Store
+# 🗄️ Distributed Key-Value Store (Go + RPC)
 
-A production-quality mini distributed key-value database built with **Python**, **FastAPI**, and **Docker**. Demonstrates core distributed systems concepts including leader-based replication, quorum writes, write-ahead logging, fault tolerance, and automatic follower recovery.
+A production-quality mini distributed key-value database rewritten in **Go** using Go's built-in **RPC** for internal replication/sync and custom client CLI, alongside a standard **HTTP/REST** API for public compatibility. Demonstrates core distributed systems concepts including leader-based replication, quorum writes, write-ahead logging, fault tolerance, and automatic follower recovery.
 
 ---
 
@@ -8,28 +8,30 @@ A production-quality mini distributed key-value database built with **Python**, 
 
 ```
                           ┌─────────────────────┐
-                          │      Client / CLI    │
-                          │  python client.py …  │
+                          │    Go CLI Client    │
+                          │  go run client.go … │
                           └─────────┬───────────┘
+                                    │
+                                   RPC
                                     │
                     ┌───────────────┼───────────────┐
                     ▼               ▼               ▼
-             ┌────────────┐  ┌────────────┐  ┌────────────┐
-             │   Node 1   │  │   Node 2   │  │   Node 3   │
-             │  (LEADER)  │  │ (FOLLOWER) │  │ (FOLLOWER) │
-             │  :8001     │  │  :8002     │  │  :8003     │
-             └─────┬──────┘  └─────┬──────┘  └─────┬──────┘
-                   │               │               │
-             ┌─────┴──────┐  ┌─────┴──────┐  ┌─────┴──────┐
-             │  WAL + KV  │  │  WAL + KV  │  │  WAL + KV  │
-             │  (SQLite)  │  │  (SQLite)  │  │  (SQLite)  │
-             └────────────┘  └────────────┘  └────────────┘
+              ┌────────────┐  ┌────────────┐  ┌────────────┐
+              │   Node 1   │  │   Node 2   │  │   Node 3   │
+              │  (LEADER)  │  │ (FOLLOWER) │  │ (FOLLOWER) │
+              │  :8001     │  │  :8002     │  │  :8003     │
+              └─────┬──────┘  └─────┬──────┘  └─────┬──────┘
+                    │               │               │
+              ┌─────┴──────┐  ┌─────┴──────┐  ┌─────┴──────┐
+              │  WAL + KV  │  │  WAL + KV  │  │  WAL + KV  │
+              │  (SQLite)  │  │  (SQLite)  │  │  (SQLite)  │
+              └────────────┘  └────────────┘  └────────────┘
 
   Write Flow:
-    Client ──PUT──► Leader ──WAL──► Replicate to followers ──► Quorum ACK ──► 200 OK
+    Client ──PUT (RPC)──► Leader ──WAL──► Replicate to followers (RPC) ──► Quorum ACK ──► Success
 
   Read Flow:
-    Client ──GET──► Any Node ──► Local SQLite ──► 200 OK
+    Client ──GET (RPC)──► Any Node ──► Local SQLite ──► Value
 ```
 
 ---
@@ -39,18 +41,18 @@ A production-quality mini distributed key-value database built with **Python**, 
 | Concept | How It's Implemented |
 |---|---|
 | **Leader-based replication** | All writes are serialised through the leader node |
-| **Write-ahead logging (WAL)** | Every mutation is appended to a durable log before applying to KV |
+| **Write-ahead logging (WAL)** | Every mutation is appended to a durable JSONL log before applying to the database |
 | **Quorum writes** | Writes succeed only when a majority (2/3) of nodes acknowledge |
-| **Write forwarding** | Followers transparently forward writes to the leader |
-| **Follower recovery** | On restart, followers sync missed log entries from the leader |
-| **Crash recovery** | WAL replay rebuilds in-memory + SQLite state after a crash |
+| **Write forwarding** | Followers transparently forward writes to the leader via Go RPC |
+| **Follower recovery** | On restart, followers catch up missed WAL entries from the leader using Go RPC |
+| **Crash recovery** | WAL replay rebuilds SQLite state automatically after a crash or restart |
 | **Idempotent replication** | Duplicate log entries are safely ignored by followers |
 
 ---
 
-## 🔌 API Reference
+## 🔌 API & RPC Reference
 
-### Public Endpoints
+### Public HTTP/REST Endpoints (Backward Compatible)
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -61,12 +63,17 @@ A production-quality mini distributed key-value database built with **Python**, 
 | `GET` | `/metrics` | Observability metrics |
 | `GET` | `/cluster` | Cluster peer status |
 
-### Internal Endpoints (node-to-node)
+### RPC Interface (`KVNode` Service)
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/internal/replicate` | Receive replicated log entries from leader |
-| `POST` | `/internal/sync` | Return WAL entries for follower recovery |
+The Go client uses `net/rpc` over TCP to invoke the following methods:
+- `KVNode.Put(args models.PutArgs, reply *models.PutReply)`
+- `KVNode.Get(args models.GetArgs, reply *models.GetReply)`
+- `KVNode.Delete(args models.DeleteArgs, reply *models.DeleteReply)`
+- `KVNode.Health(args models.HealthArgs, reply *models.HealthReply)`
+- `KVNode.Metrics(args models.MetricsArgs, reply *models.MetricsReply)`
+- `KVNode.Cluster(args models.ClusterArgs, reply *models.ClusterReply)`
+- `KVNode.Replicate(args models.ReplicateArgs, reply *models.ReplicateReply)` (Internal)
+- `KVNode.Sync(args models.SyncArgs, reply *models.SyncReply)` (Internal)
 
 ---
 
@@ -74,9 +81,8 @@ A production-quality mini distributed key-value database built with **Python**, 
 
 ### Prerequisites
 
-- Python 3.11+
-- Docker & Docker Compose
-- pip
+- Go 1.22+
+- Docker & Docker Compose (optional)
 
 ### Run with Docker Compose (recommended)
 
@@ -85,25 +91,22 @@ A production-quality mini distributed key-value database built with **Python**, 
 docker compose up --build
 
 # The cluster is now running:
-#   Leader   → http://localhost:8001
-#   Follower → http://localhost:8002
-#   Follower → http://localhost:8003
+#   Leader   → http://localhost:8001 (RPC / HTTP)
+#   Follower → http://localhost:8002 (RPC / HTTP)
+#   Follower → http://localhost:8003 (RPC / HTTP)
 ```
 
 ### Run Locally (single node, for development)
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
 # Start a single leader node
 NODE_ID=node1 NODE_ROLE=leader NODE_PORT=8000 PEERS="" DATA_DIR=./data \
-  python -m app.main
+  go run main.go
 ```
 
 ---
 
-## 📡 API Examples with curl
+## 📡 API Examples with curl (HTTP)
 
 ### Store a value
 ```bash
@@ -129,87 +132,48 @@ curl -X DELETE http://localhost:8001/kv/name
 # {"key":"name","value":null,"message":"deleted"}
 ```
 
-### Health check
-```bash
-curl http://localhost:8001/health
-# {"node_id":"node1","role":"leader","status":"healthy"}
-```
-
-### Metrics
-```bash
-curl http://localhost:8001/metrics
-# {
-#   "node_id": "node1",
-#   "role": "leader",
-#   "total_reads": 5,
-#   "total_writes": 3,
-#   "total_deletes": 1,
-#   "replication_success_count": 6,
-#   "replication_failure_count": 0,
-#   "log_index": 3
-# }
-```
-
-### Cluster status
-```bash
-curl http://localhost:8001/cluster
-# [
-#   {"peer": "http://node2:8000", "status": "healthy", ...},
-#   {"peer": "http://node3:8000", "status": "healthy", ...}
-# ]
-```
-
 ---
 
-## 💻 CLI Client
+## 💻 Go CLI Client (RPC)
+
+We provide a native Go client that communicates with the nodes via Go RPC:
 
 ```bash
+# Compile the client
+go build -o kvclient client/client.go
+
 # Store a value
-python client.py put name Aditya
+./kvclient put name Aditya
 
 # Retrieve a value
-python client.py get name
+./kvclient get name
 
 # Delete a value
-python client.py delete name
+./kvclient delete name
 
 # Health check
-python client.py health
+./kvclient health
 
 # Metrics
-python client.py metrics
+./kvclient metrics
 
 # Cluster status
-python client.py cluster
+./kvclient cluster
 
-# Connect to a specific node
-python client.py --url http://localhost:8002 get name
+# Connect to a specific follower node
+./kvclient --url localhost:8002 get name
 ```
 
 ---
 
 ## 🧪 Running Tests
 
+Go unit and integration tests cover key-value API, storage engine, crash recovery, and quorum replication:
+
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
 # Run all tests
-pytest tests/ -v
-
-# Run specific test files
-pytest tests/test_kv_api.py -v
-pytest tests/test_replication.py -v
-pytest tests/test_failure_recovery.py -v
+go test -v ./...
 ```
-
-### Test Coverage
-
-| Test File | What It Covers |
-|---|---|
-| `test_kv_api.py` | PUT, GET, DELETE, health, metrics endpoints |
-| `test_replication.py` | WAL append, persistence, crash recovery, idempotent replication |
-| `test_failure_recovery.py` | Quorum with follower failures, catch-up sync, WAL durability |
 
 ---
 
@@ -222,19 +186,19 @@ pytest tests/test_failure_recovery.py -v
 docker compose up --build -d
 
 # Write a value (succeeds with all 3 nodes)
-curl -X PUT http://localhost:8001/kv/test -d '{"value":"hello"}' -H "Content-Type: application/json"
+./kvclient --url localhost:8001 put test hello
 
 # Kill node3
 docker compose stop node3
 
 # Write another value (still succeeds — quorum is 2/3)
-curl -X PUT http://localhost:8001/kv/test2 -d '{"value":"world"}' -H "Content-Type: application/json"
+./kvclient --url localhost:8001 put test2 world
 
 # Verify the value exists on node2
-curl http://localhost:8002/kv/test2
+./kvclient --url localhost:8002 get test2
 ```
 
-### Scenario 2: Bring follower back — it should sync
+### Scenario 2: Bring follower back — it should catch up sync
 
 ```bash
 # Restart node3
@@ -242,7 +206,7 @@ docker compose start node3
 
 # Wait a few seconds for sync, then verify
 sleep 3
-curl http://localhost:8003/kv/test2
+./kvclient --url localhost:8003 get test2
 # Should return: {"key":"test2","value":"world","message":"found"}
 ```
 
@@ -251,34 +215,9 @@ curl http://localhost:8003/kv/test2
 ```bash
 docker compose stop node2 node3
 
-curl -X PUT http://localhost:8001/kv/fail -d '{"value":"nope"}' -H "Content-Type: application/json"
-# Should return: 503 "Write failed: could not reach quorum"
+./kvclient --url localhost:8001 put fail nope
+# Should return: ❌ Error: Write failed: could not reach quorum
 ```
-
----
-
-## 📊 Observability
-
-Each node exposes a `/metrics` endpoint with:
-
-| Metric | Description |
-|---|---|
-| `node_id` | Unique identifier for this node |
-| `role` | `leader` or `follower` |
-| `total_reads` | Number of GET requests served |
-| `total_writes` | Number of successful PUT operations |
-| `total_deletes` | Number of successful DELETE operations |
-| `replication_success_count` | Successful replication RPCs |
-| `replication_failure_count` | Failed replication RPCs |
-| `log_index` | Latest WAL entry index |
-
----
-
-## 🔒 Consistency Model
-
-- **Writes**: **Strong consistency** via leader-based quorum replication. A write is only acknowledged after a majority of nodes have persisted it.
-- **Reads from leader**: Always consistent (the leader has the latest data).
-- **Reads from followers**: May be **slightly stale** if a follower hasn't received the latest replicated entry yet. For strong read consistency, always read from the leader or implement read forwarding.
 
 ---
 
@@ -286,44 +225,27 @@ Each node exposes a `/metrics` endpoint with:
 
 ```
 distributed-kv-store/
+├── main.go               # Server entry point, configuration & RPC listener
+├── client/
+│   └── client.go         # Go CLI client using Go RPC
 ├── app/
-│   ├── __init__.py        # Package marker
-│   ├── main.py            # FastAPI application & all endpoints
-│   ├── storage.py         # WAL + SQLite KV engine
-│   ├── replication.py     # Leader→follower replication with quorum
-│   ├── cluster.py         # Peer health checks & follower sync
-│   ├── config.py          # Environment-based configuration
-│   └── models.py          # Pydantic request/response models
+│   ├── config/
+│   │   └── config.go     # Loads config from environment variables
+│   ├── models/
+│   │   └── models.go     # Shared RPC & HTTP request/response models
+│   ├── storage/
+│   │   └── storage.go    # WAL (jsonl) + SQLite engine logic
+│   ├── replication/
+│   │   └── replication.go # Leader quorum replication over Go RPC
+│   └── cluster/
+│       └── cluster.go    # Peer health checks (HTTP) & catch-up sync (RPC)
 ├── tests/
-│   ├── __init__.py
-│   ├── test_kv_api.py     # API endpoint tests
-│   ├── test_replication.py # WAL & storage engine tests
-│   └── test_failure_recovery.py  # Quorum & recovery tests
-├── client.py              # CLI client
+│   ├── kv_api_test.go    # HTTP endpoint unit tests
+│   ├── replication_test.go # WAL & storage engine unit tests
+│   └── storage_test.go   # Failure & recovery unit tests
 ├── docker-compose.yml     # 3-node cluster definition
-├── Dockerfile             # Container image
-├── requirements.txt       # Python dependencies
+├── Dockerfile             # Multi-stage Docker build for a lightweight Go binary
 ├── .env.example           # Example environment variables
 ├── .gitignore
 └── README.md              # This file
 ```
-
----
-
-## 🏗️ How to Push to GitHub
-
-```bash
-cd "distributed key value store"
-
-# Initialize git
-git init
-git add .
-git commit -m "feat: distributed key-value store with quorum replication"
-
-# Create a repo on GitHub, then:
-git remote add origin https://github.com/<your-username>/distributed-kv-store.git
-git branch -M main
-git push -u origin main
-```
-
-This is a python Project, implementation of this in GoLang will be available in some time.
